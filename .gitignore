@@ -1,0 +1,54 @@
+# secrets / tokens
+.env
+*.pem
+api-key.txt
+api-tokens.txt
+*Key.txt
+penpot_code.txt
+proxy_out.txt
+proxy_err.txt
+
+# binaries / tools
+*.exe
+cloudflared.err
+pull.err
+*.log
+
+# images / binary junk
+*.b64
+*.jpg
+*.png
+hat.jpg
+gen_art*.png
+gen_art*.jpg
+generated.png
+
+# dev / scratch scripts
+generate_art.py
+make_jpg.py
+make_jpg_small.py
+ollama_cors_proxy.py
+serve.py
+setup_penpot_mcp.py
+start_cors_proxy.bat
+start_tunnel.bat
+test_*.py
+
+# processing junk
+chunk_*.txt
+chunks.txt
+chunk_meta.txt
+
+# runtime stores
+pdf_store.json
+last_answers.json
+
+# python
+__pycache__/
+*.pyc
+
+# docs not needed for deploy
+PENPOT_IMAGE_WORKFLOW.md
+awesome-free-llm-apis.md
+art-minsk-team.md
+prompts/
