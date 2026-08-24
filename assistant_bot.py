@@ -230,11 +230,17 @@ def make_english_prompt(text):
     sys = ("You are an image-prompt translator. Convert the user's image request into a detailed "
            "English Stable Diffusion XL prompt. Name the main subject explicitly, add concise style, "
            "lighting and medium details. Respond with ONLY the prompt text, no quotes, no extra commentary.")
-    out = call_cloudflare_text([
-        {"role": "system", "content": sys},
-        {"role": "user", "content": text},
-    ])
-    out = (out or "").strip().strip('"').strip("'").strip()
+    out = call_cloudflare_chat(sys, text, 300)
+    if not out:
+        return text
+    out = out.strip().strip('"').strip("'").strip()
+    # если перевод не сработал и осталась кириллица — пробуем ещё раз жёсткой инструкцией
+    if any('\u0400' <= ch <= '\u04ff' for ch in out):
+        out2 = call_cloudflare_chat(
+            "Translate the following request into English only. Output nothing but the English text.",
+            text, 300)
+        if out2 and not any('\u0400' <= ch <= '\u04ff' for ch in out2):
+            out = out2.strip().strip('"').strip("'").strip()
     return out or text
 
 
@@ -255,6 +261,10 @@ def tool_generate_image(args, ctx):
             prompt = make_english_prompt(prompt)
         except Exception:
             pass
+        # если после перевода осталась кириллица — SDXL её не поймёт: не генерируем ерунду
+        if any('\u0400' <= ch <= '\u04ff' for ch in prompt):
+            return ("Не удалось перевести промпт на английский для генерации изображения. "
+                    "Напиши описание картинки по-английски или повтори позже.")
     try:
         img_bytes = generate_image(prompt)
         ctx["images"].append(("🎨 " + prompt, img_bytes))
