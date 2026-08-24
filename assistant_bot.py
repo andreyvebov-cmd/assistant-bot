@@ -768,7 +768,7 @@ def _pdf_bytes_from(text):
     from fpdf import FPDF
     import io as _io
     pdf = FPDF()
-    pdf.add_font("ArialCyr", "", r"C:\Windows\Fonts\arial.ttf")
+    pdf.add_font("ArialCyr", "", FONT_PATH)
     pdf.add_page()
     pdf.set_font("ArialCyr", size=12)
     pdf.multi_cell(0, 6, text)
