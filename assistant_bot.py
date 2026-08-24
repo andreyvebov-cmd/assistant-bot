@@ -1121,6 +1121,23 @@ def _start_health_server():
                 model = str(obj.get("model", ""))
                 if not model.startswith("@cf/"):
                     obj["model"] = CF_TEXT_MODEL
+                # Cloudflare не принимает content-массивы (мультимодальный формат OpenAI) и null-контент —
+                # сплющиваем content в строку и выкидываем пустые сообщения.
+                clean_msgs = []
+                for m in obj.get("messages", []):
+                    if not isinstance(m, dict):
+                        continue
+                    c = m.get("content")
+                    if isinstance(c, list):
+                        c = "".join(str(p.get("text", "")) for p in c if isinstance(p, dict) and p.get("type") == "text")
+                    if c is None:
+                        c = ""
+                    if not isinstance(c, str):
+                        c = str(c)
+                    clean_msgs.append({"role": m.get("role", "user"), "content": c})
+                clean_msgs = [m for m in clean_msgs if m["content"].strip() != ""]
+                if clean_msgs:
+                    obj["messages"] = clean_msgs
                 payload = _json.dumps(obj).encode("utf-8")
                 suffix = self.path[len("/ava"):]
                 if not suffix or suffix == "/":
