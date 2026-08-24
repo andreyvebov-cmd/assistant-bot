@@ -2,17 +2,6 @@ services:
   - type: worker
     name: assistant-bot
     runtime: python
-    pythonVersion: "3.13"
+    pythonVersion: "3.12"
     buildCommand: pip install -r requirements.txt
     startCommand: python assistant_bot.py
-    envVars:
-      - key: ASSISTANT_TELEGRAM_TOKEN
-        sync: false
-      - key: CLOUDFLARE_API_TOKEN
-        sync: false
-      - key: CLOUDFLARE_ACCOUNT_ID
-        sync: false
-      - key: CLOUDFLARE_EMAIL
-        sync: false
-      - key: CLOUDFLARE_GLOBAL_KEY
-        sync: false
