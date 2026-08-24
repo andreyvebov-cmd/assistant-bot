@@ -282,46 +282,38 @@ def tool_current_datetime(args, ctx):
 
 
 def web_search_raw(query):
-    """Возвращает список словарей {title, url, snippet} по запросу (DuckDuckGo HTML + Wikipedia RU)."""
+    """Возвращает список словарей {title, url, snippet} по запросу (DuckDuckGo HTML)."""
     import re as _re
     from urllib.parse import unquote
+    import time
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
     def clean(s):
         s = _re.sub(r"<[^>]+>", "", s)
         s = _re.sub(r"&[a-z]+;", " ", s)
         return s.strip()
     results = []
-    # 1) DuckDuckGo HTML (надёжный парсинг; Lite-версия сменила вёрстку и не парсится)
-    try:
-        r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=20)
-        if r.status_code == 202:
+    # DuckDuckGo HTML: эндпоинт иногда отдаёт пустоту/челлендж, поэтому несколько попыток
+    for _ in range(3):
+        try:
             r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=20)
-        anchors = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, _re.DOTALL)
-        snips = _re.findall(r'class="result__snippet"[^>]*>(.*?)</div>', r.text, _re.DOTALL)
-        for i, (href, title_html) in enumerate(anchors[:6]):
-            title = clean(title_html)
-            sn = clean(snips[i]) if i < len(snips) else ""
-            m = _re.search(r"uddg=([^&]+)", href)
-            url = unquote(m.group(1)) if m else (href if href.startswith("http") else "")
-            if title and url:
-                results.append({"title": title, "url": url, "snippet": sn})
-        if results:
-            return results
-    except Exception:
-        pass
-    # 2) Wikipedia RU — запасной вариант для фактических/справочных запросов
-    try:
-        r = requests.get("https://ru.wikipedia.org/w/api.php",
-                         params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 5},
-                         headers={"User-Agent": "AssistantBot/1.0"}, timeout=15)
-        if r.headers.get("content-type", "").startswith("application/json"):
-            d = r.json()
-            for h in d.get("query", {}).get("search", [])[:5]:
-                results.append({"title": h["title"], "url": "https://ru.wikipedia.org/wiki/" + h["title"].replace(" ", "_"), "snippet": clean(h["snippet"])})
+            if r.status_code == 202:
+                r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=20)
+            anchors = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, _re.DOTALL)
+            snips = _re.findall(r'class="result__snippet"[^>]*>(.*?)</div>', r.text, _re.DOTALL)
+            for i, (href, title_html) in enumerate(anchors[:6]):
+                title = clean(title_html)
+                sn = clean(snips[i]) if i < len(snips) else ""
+                m = _re.search(r"uddg=([^&]+)", href)
+                url = unquote(m.group(1)) if m else (href if href.startswith("http") else "")
+                if title and url:
+                    results.append({"title": title, "url": url, "snippet": sn})
             if results:
                 return results
-    except Exception:
-        pass
+        except Exception:
+            pass
+        time.sleep(1.0)
+    # если DDG не ответил — возвращаем пустоту, чтобы бот честно сказал «не нашёл»,
+    # а не выдумывал несуществующие объекты из Википедии
     return []
 
 
