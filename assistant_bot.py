@@ -857,10 +857,21 @@ async def handle_text(update, context):
             return
         await update.message.reply_text("⏳ Генерирую изображение…")
         bot = update.get_bot()
+        prompt = user_text
+        if any('\u0400' <= ch <= '\u04ff' for ch in prompt):
+            try:
+                prompt = make_english_prompt(prompt)
+            except Exception:
+                pass
+            if any('\u0400' <= ch <= '\u04ff' for ch in prompt):
+                await update.message.reply_text(
+                    "❌ Не удалось перевести промпт на английский. Напиши описание по-английски или повтори позже."
+                )
+                return
         stop = asyncio.Event()
         task = asyncio.create_task(_photo_action_loop(bot, update.message.chat_id, stop))
         try:
-            img_bytes = await asyncio.to_thread(generate_image, user_text)
+            img_bytes = await asyncio.to_thread(generate_image, prompt)
         except Exception as e:
             stop.set()
             task.cancel()
