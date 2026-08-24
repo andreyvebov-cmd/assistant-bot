@@ -65,6 +65,8 @@ CF_MODEL = os.getenv("CLOUDFLARE_MODEL", "@cf/stabilityai/stable-diffusion-xl-ba
 # Текстовая модель Cloudflare Workers AI
 CF_TEXT_MODEL = os.getenv("CLOUDFLARE_TEXT_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast")
 CF_VISION_MODEL = os.getenv("CLOUDFLARE_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct")
+# Brave Search API (бесплатный тариф 2000 запросов/мес, без карты). Если ключ задан — поиск идёт через Brave, иначе fallback на DuckDuckGo.
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 
 SYSTEM_PROMPT = """Ты — интеллектуальный ассистент в Telegram. Твоя задача: давать точные, полезные и структурированные ответы.
 ПРАВИЛА ОБЩЕНИЯ:
@@ -283,18 +285,47 @@ def tool_current_datetime(args, ctx):
     return "Текущие дата и время (локальные): " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _brave_search(query):
+    """Возвращает список словарей {title, url, snippet} через Brave Search API."""
+    import re as _re
+    def clean(s):
+        return _re.sub(r"<[^>]+>", "", s or "").strip()
+    headers = {"Accept": "application/json", "X-Subscription-Token": BRAVE_API_KEY}
+    params = {"q": query, "count": 10, "country": "ru", "search_lang": "ru", "safesearch": "moderate"}
+    r = requests.get("https://api.search.brave.com/res/v1/web/search", headers=headers, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    results = []
+    for item in (data.get("web", {}) or {}).get("results", [])[:6]:
+        title = clean(item.get("title"))
+        url = item.get("url") or ""
+        sn = clean(item.get("description"))
+        if title and url:
+            results.append({"title": title, "url": url, "snippet": sn})
+    return results
+
+
 def web_search_raw(query):
-    """Возвращает список словарей {title, url, snippet} по запросу (DuckDuckGo HTML)."""
+    """Возвращает список словарей {title, url, snippet} по запросу.
+    Если задан BRAVE_API_KEY — использует Brave Search API (стабильно), иначе — DuckDuckGo HTML (fallback)."""
     import re as _re
     from urllib.parse import unquote
     import time
+    # 1) Brave Search API (приоритет — стабильный, без троттлинга)
+    if BRAVE_API_KEY:
+        try:
+            res = _brave_search(query)
+            if res:
+                return res
+        except Exception:
+            pass  # при сбое Brave — откатываемся на DDG
+    # 2) DuckDuckGo HTML (fallback): эндпоинт иногда отдаёт пустоту/челлендж, поэтому несколько попыток
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
     def clean(s):
         s = _re.sub(r"<[^>]+>", "", s)
         s = _re.sub(r"&[a-z]+;", " ", s)
         return s.strip()
     results = []
-    # DuckDuckGo HTML: эндпоинт иногда отдаёт пустоту/челлендж, поэтому несколько попыток
     for _ in range(3):
         try:
             r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=20)
@@ -314,7 +345,7 @@ def web_search_raw(query):
         except Exception:
             pass
         time.sleep(1.0)
-    # если DDG не ответил — возвращаем пустоту, чтобы бот честно сказал «не нашёл»,
+    # если ничего не нашли — возвращаем пустоту, чтобы бот честно сказал «не нашёл»,
     # а не выдумывал несуществующие объекты из Википедии
     return []
 
