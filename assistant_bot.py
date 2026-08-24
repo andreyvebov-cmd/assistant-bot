@@ -348,6 +348,54 @@ def _serpapi_search(query):
     return results
 
 
+def _searx_search(query):
+    """SearXNG публичные инстансы (БЕЗ ключа). Бестолковый запасной источник, когда DDG не ответил.
+    Публичные инстансы нестабильны — используется только как последняя попытка."""
+    import re as _re
+    def clean(s):
+        return _re.sub(r"<[^>]+>", "", s or "").strip()
+    # JSON-выдача нескольких инстансов; если не отдают JSON — парсим HTML
+    instances = [
+        "https://searx.be/search",
+        "https://priv.au/search",
+        "https://search.inetol.net/search",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
+    for base in instances:
+        try:
+            r = requests.get(base, params={"q": query, "format": "json"}, headers=headers, timeout=10)
+            items = []
+            if r.status_code == 200 and "results" in r.text:
+                try:
+                    data = r.json()
+                    items = data.get("results", [])
+                except Exception:
+                    items = []
+            if not items:
+                # fallback: парсим HTML
+                r2 = requests.get(base, params={"q": query}, headers=headers, timeout=10)
+                if r2.status_code == 200:
+                    anchors = _re.findall(r'<a[^>]+class="[^"]*url_header[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r2.text, _re.DOTALL)
+                    snips = _re.findall(r'<p[^>]+class="content"[^>]*>(.*?)</p>', r2.text, _re.DOTALL)
+                    for i, (href, title_html) in enumerate(anchors[:6]):
+                        title = clean(title_html)
+                        sn = clean(snips[i]) if i < len(snips) else ""
+                        if title and href.startswith("http"):
+                            items.append({"title": title, "url": href, "content": sn})
+            results = []
+            for item in items[:6]:
+                title = clean(item.get("title"))
+                url = item.get("url") or ""
+                sn = clean(item.get("content") or item.get("snippet"))
+                if title and url:
+                    results.append({"title": title, "url": url, "snippet": sn})
+            if results:
+                return results
+        except Exception:
+            continue
+    return []
+
+
 def web_search_raw(query):
     """Возвращает список словарей {title, url, snippet} по запросу.
     Стабильные провайдеры (бесплатно, без карты): Tavily > SerpAPI > Brave — выбирается по первому заданному ключу.
@@ -394,8 +442,14 @@ def web_search_raw(query):
         except Exception:
             pass
         time.sleep(1.0)
-    # если ничего не нашли — возвращаем пустоту, чтобы бот честно сказал «не нашёл»,
-    # а не выдумывал несуществующие объекты из Википедии
+    # 3) Последняя попытка — публичный SearXNG (без ключа). Если и он пуст — возвращаем пустоту,
+    # чтобы бот честно сказал «не нашёл», а не выдумывал несуществующие объекты из Википедии.
+    try:
+        sx = _searx_search(query)
+        if sx:
+            return sx
+    except Exception:
+        pass
     return []
 
 
