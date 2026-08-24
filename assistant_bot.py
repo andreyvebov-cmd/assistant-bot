@@ -1084,19 +1084,70 @@ async def _post_init(application):
 
 def _start_health_server():
     # Мини-HTTP-сервер для Render (Web Service ждёт ответ на $PORT).
-    # Запускается только если задана переменная PORT (на Render она есть, локально — нет).
+    # Плюс CORS-прокси /ava/* -> Cloudflare Workers AI: браузерный плагин (напр. AVA) не может дёрнуть
+    # api.cloudflare.com напрямую (нет CORS-заголовков), поэтому проксируем через этот сервер,
+    # который уже держит токен Cloudflare (CF_TOKEN) и отдаёт правильные CORS-заголовки.
     import http.server
     import socketserver
+    import json as _json
+    cf_ai_base = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai"
     port = int(os.getenv("PORT", "8080"))
     class _H(http.server.BaseHTTPRequestHandler):
+        def _cors(self):
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self._cors()
+            self.end_headers()
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
+        def do_POST(self):
+            if not self.path.startswith("/ava"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    obj = _json.loads(raw.decode("utf-8", "replace")) if raw else {}
+                except Exception:
+                    obj = {}
+                # Cloudflare принимает только модели вида @cf/...; если плагин прислал другую — подменяем на нашу
+                model = str(obj.get("model", ""))
+                if not model.startswith("@cf/"):
+                    obj["model"] = CF_TEXT_MODEL
+                payload = _json.dumps(obj).encode("utf-8")
+                suffix = self.path[len("/ava"):]
+                if not suffix or suffix == "/":
+                    suffix = "/v1/chat/completions"
+                target = cf_ai_base + suffix
+                resp = requests.post(target,
+                                    headers={"Authorization": f"Bearer {CF_TOKEN}", "Content-Type": "application/json"},
+                                    data=payload, timeout=120)
+                data = resp.content
+                self.send_response(resp.status_code)
+                self._cors()
+                self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                msg = str(e).encode("utf-8")
+                self.send_response(502)
+                self._cors()
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(msg)))
+                self.end_headers()
+                self.wfile.write(msg)
         def log_message(self, *a):
             pass
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), _H) as httpd:
+    with socketserver.ThreadingTCPServer(("", port), _H) as httpd:
         httpd.serve_forever()
 
 
