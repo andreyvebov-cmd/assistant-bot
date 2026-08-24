@@ -67,6 +67,9 @@ CF_TEXT_MODEL = os.getenv("CLOUDFLARE_TEXT_MODEL", "@cf/meta/llama-3.3-70b-instr
 CF_VISION_MODEL = os.getenv("CLOUDFLARE_VISION_MODEL", "@cf/meta/llama-3.2-11b-vision-instruct")
 # Brave Search API (бесплатный тариф 2000 запросов/мес, без карты). Если ключ задан — поиск идёт через Brave, иначе fallback на DuckDuckGo.
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
+# Альтернативные бесплатные поисковые API (без карты). Поддерживается любой из них — код выберет первый заданный ключ.
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")   # https://tavily.com  (1000 запросов/мес, AI-поиск, чистые результаты)
+SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")         # https://serpapi.com (100 запросов/мес, Google-результаты)
 
 SYSTEM_PROMPT = """Ты — интеллектуальный ассистент в Telegram. Твоя задача: давать точные, полезные и структурированные ответы.
 ПРАВИЛА ОБЩЕНИЯ:
@@ -305,20 +308,66 @@ def _brave_search(query):
     return results
 
 
+def _tavily_search(query):
+    """Tavily Search API (бесплатно 1000 запросов/мес, без карты). Чистые результаты, удобные для LLM."""
+    import re as _re
+    def clean(s):
+        return _re.sub(r"<[^>]+>", "", s or "").strip()
+    r = requests.post("https://api.tavily.com/search",
+                      json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 6, "search_depth": "basic"},
+                      headers={"Content-Type": "application/json"}, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    results = []
+    for item in data.get("results", [])[:6]:
+        url = item.get("url") or ""
+        title = clean(item.get("title")) or url
+        sn = clean(item.get("content"))
+        if url:
+            results.append({"title": title, "url": url, "snippet": sn})
+    return results
+
+
+def _serpapi_search(query):
+    """SerpAPI (бесплатно 100 запросов/мес, без карты). Результаты Google."""
+    import re as _re
+    def clean(s):
+        return _re.sub(r"<[^>]+>", "", s or "").strip()
+    r = requests.get("https://serpapi.com/search.json",
+                     params={"engine": "google", "q": query, "api_key": SERPAPI_KEY, "hl": "ru", "gl": "ru"},
+                     timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    results = []
+    for item in data.get("organic_results", [])[:6]:
+        title = clean(item.get("title"))
+        url = item.get("link") or ""
+        sn = clean(item.get("snippet"))
+        if title and url:
+            results.append({"title": title, "url": url, "snippet": sn})
+    return results
+
+
 def web_search_raw(query):
     """Возвращает список словарей {title, url, snippet} по запросу.
-    Если задан BRAVE_API_KEY — использует Brave Search API (стабильно), иначе — DuckDuckGo HTML (fallback)."""
+    Стабильные провайдеры (бесплатно, без карты): Tavily > SerpAPI > Brave — выбирается по первому заданному ключу.
+    Если ни один ключ не задан (или все сбоят) — fallback на DuckDuckGo HTML."""
     import re as _re
     from urllib.parse import unquote
     import time
-    # 1) Brave Search API (приоритет — стабильный, без троттлинга)
-    if BRAVE_API_KEY:
-        try:
-            res = _brave_search(query)
-            if res:
-                return res
-        except Exception:
-            pass  # при сбое Brave — откатываемся на DDG
+    # 1) Платные/стабильные провайдеры (бесплатные тарифы без карты). Выбираем первый заданный ключ: Tavily > SerpAPI > Brave
+    for _key, _fn in (
+        (TAVILY_API_KEY, _tavily_search),
+        (SERPAPI_KEY, _serpapi_search),
+        (BRAVE_API_KEY, _brave_search),
+    ):
+        if _key:
+            try:
+                res = _fn(query)
+                if res:
+                    return res
+            except Exception:
+                pass  # при сбое провайдера — пробуем следующего / откат на DDG
     # 2) DuckDuckGo HTML (fallback): эндпоинт иногда отдаёт пустоту/челлендж, поэтому несколько попыток
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
     def clean(s):
