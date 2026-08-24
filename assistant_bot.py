@@ -928,6 +928,24 @@ async def _post_init(application):
         pass
 
 
+def _start_health_server():
+    # Мини-HTTP-сервер для Render (Web Service ждёт ответ на $PORT).
+    # Запускается только если задана переменная PORT (на Render она есть, локально — нет).
+    import http.server
+    import socketserver
+    port = int(os.getenv("PORT", "8080"))
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+        def log_message(self, *a):
+            pass
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("", port), _H) as httpd:
+        httpd.serve_forever()
+
+
 def main():
     if not TELEGRAM_TOKEN:
         print("Не задан ASSISTANT_TELEGRAM_TOKEN в .env")
@@ -944,6 +962,12 @@ def main():
     app.add_handler(CallbackQueryHandler(pdf_button_callback, pattern="^pdf:"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    if os.getenv("PORT"):
+        try:
+            import threading
+            threading.Thread(target=_start_health_server, daemon=True).start()
+        except Exception:
+            pass
     print("Бот запущен. Ctrl+C для остановки.")
     app.run_polling(allowed_updates=["message", "callback_query", "edited_message", "channel_post"])
 
