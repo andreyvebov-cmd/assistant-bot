@@ -247,15 +247,17 @@ def make_english_prompt(text):
 def tool_generate_image(args, ctx):
     if ctx.get("_img_done"):
         return "Изображение уже сгенерировано в этом ответе; повторно не генерирую. Заверши ответ."
-    prompt = (args.get("prompt") or "").strip()
-    if not prompt:
+    # ВСЕГДА берём сюжет из реального запроса пользователя, а не из того, что насочинила модель
+    source = (ctx.get("last_user_text") or args.get("prompt") or "").strip()
+    if not source:
         return "Не задан промпт для изображения."
-    text = (ctx.get("last_user_text") or "").lower()
+    text = source.lower()
     keys = ["нарисуй", "рисун", "картинк", "изображ", "draw", "image", "picture",
             "painting", "сгенерируй изображ", "создай картин", "аватар", "иллюстрац", "эскиз"]
     if not any(k in text for k in keys):
         return "Инструмент generate_image пропущен: в сообщении нет явной просьбы нарисовать. Ответь обычным текстом."
-    # гарантируем английский SDXL-промпт: переводим, если в запросе есть кириллица
+    # переводим запрос пользователя в английский SDXL-промпт (кириллица -> английский)
+    prompt = source
     if any('\u0400' <= ch <= '\u04ff' for ch in prompt):
         try:
             prompt = make_english_prompt(prompt)
@@ -280,7 +282,7 @@ def tool_current_datetime(args, ctx):
 
 
 def web_search_raw(query):
-    """Возвращает список словарей {title, url, snippet} по запросу (DuckDuckGo Lite + Wikipedia RU)."""
+    """Возвращает список словарей {title, url, snippet} по запросу (DuckDuckGo HTML + Wikipedia RU)."""
     import re as _re
     from urllib.parse import unquote
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"}
@@ -289,22 +291,25 @@ def web_search_raw(query):
         s = _re.sub(r"&[a-z]+;", " ", s)
         return s.strip()
     results = []
+    # 1) DuckDuckGo HTML (надёжный парсинг; Lite-версия сменила вёрстку и не парсится)
     try:
-        r = requests.post("https://lite.duckduckgo.com/lite/", data={"q": query}, headers=headers, timeout=20)
+        r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=20)
         if r.status_code == 202:
-            r = requests.post("https://lite.duckduckgo.com/lite/", data={"q": query}, headers=headers, timeout=20)
-        anchors = _re.findall(r'class=[\'"]result-link[\'"]\s+href="([^"]+)"[^>]*>(.*?)</a>', r.text, _re.DOTALL)
-        snips = _re.findall(r'class=[\'"]result-snippet[\'"]\s*[^>]*>(.*?)</td>', r.text, _re.DOTALL)
+            r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=20)
+        anchors = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, _re.DOTALL)
+        snips = _re.findall(r'class="result__snippet"[^>]*>(.*?)</div>', r.text, _re.DOTALL)
         for i, (href, title_html) in enumerate(anchors[:6]):
             title = clean(title_html)
             sn = clean(snips[i]) if i < len(snips) else ""
             m = _re.search(r"uddg=([^&]+)", href)
-            url = unquote(m.group(1)) if m else ""
-            results.append({"title": title, "url": url, "snippet": sn})
+            url = unquote(m.group(1)) if m else (href if href.startswith("http") else "")
+            if title and url:
+                results.append({"title": title, "url": url, "snippet": sn})
         if results:
             return results
     except Exception:
         pass
+    # 2) Wikipedia RU — запасной вариант для фактических/справочных запросов
     try:
         r = requests.get("https://ru.wikipedia.org/w/api.php",
                          params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 5},
