@@ -670,6 +670,18 @@ async def img_command(update, context):
             "Или сразу пиши вместе с командой: /img <описание>"
         )
         return
+    orig = prompt
+    # переводим кириллический промпт в английский SDXL-промпт (SDXL понимает только английский)
+    if any('\u0400' <= ch <= '\u04ff' for ch in prompt):
+        try:
+            prompt = make_english_prompt(prompt)
+        except Exception:
+            pass
+        if any('\u0400' <= ch <= '\u04ff' for ch in prompt):
+            await update.message.reply_text(
+                "❌ Не удалось перевести промпт на английский. Напиши описание по-английски или повтори позже."
+            )
+            return
     await update.message.reply_text("⏳ Генерирую изображение…")
     bot = update.get_bot()
     stop = asyncio.Event()
@@ -686,7 +698,7 @@ async def img_command(update, context):
     await bot.send_photo(
         chat_id=update.message.chat_id,
         photo=io.BytesIO(img_bytes),
-        caption=f"🎨 {prompt}",
+        caption=f"🎨 {orig}",
     )
 
 
