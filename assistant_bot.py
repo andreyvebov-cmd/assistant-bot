@@ -70,6 +70,10 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 # Альтернативные бесплатные поисковые API (без карты). Поддерживается любой из них — код выберет первый заданный ключ.
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")   # https://tavily.com  (1000 запросов/мес, AI-поиск, чистые результаты)
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")         # https://serpapi.com (100 запросов/мес, Google-результаты)
+# Локальный поисковый мост (Вариант Б): ПК пользователя поднимает прокси + туннель и присылает сюда
+# актуальный публичный URL. Если задан — поиск идёт через него (DuckDuckGo с ПК, не заблокирован, в отличие от Render).
+LOCAL_SEARCH_URL = os.getenv("LOCAL_SEARCH_URL", "")
+SEARCH_BRIDGE_TOKEN = os.getenv("SEARCH_BRIDGE_TOKEN", "sbt_7f3a9c2e1b8d4a6f5c0e9b2d7a3f1c8e")
 
 SYSTEM_PROMPT = """Ты — интеллектуальный ассистент в Telegram. Твоя задача: давать точные, полезные и структурированные ответы.
 ПРАВИЛА ОБЩЕНИЯ:
@@ -396,6 +400,27 @@ def _searx_search(query):
     return []
 
 
+def _local_search(base, query):
+    """Локальный поисковый мост: ПК пользователя проксирует DuckDuckGo и отдаёт JSON-список
+    [{title,url,snippet}]. Работает из-под обычного IP (не заблокирован, в отличие от Render)."""
+    try:
+        r = requests.get(base.rstrip("/") + "/search", params={"q": query},
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        if r.ok:
+            data = r.json()
+            results = []
+            for item in (data if isinstance(data, list) else [])[:8]:
+                title = (item.get("title") or "").strip()
+                url = item.get("url") or ""
+                sn = (item.get("snippet") or "").strip()
+                if title and url:
+                    results.append({"title": title, "url": url, "snippet": sn})
+            return results
+    except Exception:
+        pass
+    return []
+
+
 def web_search_raw(query):
     """Возвращает список словарей {title, url, snippet} по запросу.
     Стабильные провайдеры (бесплатно, без карты): Tavily > SerpAPI > Brave — выбирается по первому заданному ключу.
@@ -403,6 +428,14 @@ def web_search_raw(query):
     import re as _re
     from urllib.parse import unquote
     import time
+    # 0) Локальный поисковый мост (приоритет): ПК пользователя (не заблокирован, в отличие от Render)
+    if LOCAL_SEARCH_URL:
+        try:
+            res = _local_search(LOCAL_SEARCH_URL, query)
+            if res:
+                return res
+        except Exception:
+            pass
     # 1) Платные/стабильные провайдеры (бесплатные тарифы без карты). Выбираем первый заданный ключ: Tavily > SerpAPI > Brave
     for _key, _fn in (
         (TAVILY_API_KEY, _tavily_search),
@@ -1212,11 +1245,31 @@ def _start_health_server():
             self.send_response(204)
             self._cors()
             self.end_headers()
+        def _set_url_from_query(self):
+            from urllib.parse import urlparse, parse_qs
+            try:
+                q = parse_qs(urlparse(self.path).query)
+                token = (q.get("token") or [""])[0]
+                url = (q.get("url") or [""])[0].strip()
+                if not token or token != SEARCH_BRIDGE_TOKEN:
+                    self.send_response(403); self.end_headers(); self.wfile.write(b"bad token"); return
+                if not url.startswith("http"):
+                    self.send_response(400); self.end_headers(); self.wfile.write(b"bad url"); return
+                global LOCAL_SEARCH_URL
+                LOCAL_SEARCH_URL = url
+                print(f"[bridge] LOCAL_SEARCH_URL set -> {url}")
+                self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            except Exception as e:
+                self.send_response(500); self.end_headers(); self.wfile.write(str(e).encode("utf-8", "replace"))
         def do_GET(self):
+            if self.path.startswith("/_set_search_url"):
+                self._set_url_from_query(); return
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
         def do_POST(self):
+            if self.path.startswith("/_set_search_url"):
+                self._set_url_from_query(); return
             if not self.path.startswith("/ava"):
                 self.send_response(404)
                 self.end_headers()
