@@ -746,6 +746,7 @@ async def help_command(update, context):
         "• 📷 Отправь фото — опишу через Cloudflare Vision.\n"
         "• 🤖 Я агент: сам вызываю инструменты (web_search, generate_image, get_current_datetime, make_pdf).\n"
         "• /new — забыть историю переписки.\n"
+        "• /market <запрос> — анализ товара/ниши на маркетплейсах: цены, конкуренты, отзывы, тренды (пришлю .md-отчёт).\n"
         "Модель текста: " + CF_TEXT_MODEL
     )
 
@@ -754,6 +755,7 @@ async def new_command(update, context):
     context.chat_data["history"] = []
     context.chat_data.pop("pending_img", None)
     context.chat_data.pop("pending_research", None)
+    context.chat_data.pop("pending_market", None)
     await update.message.reply_text("🧹 История диалога сброшена.")
 
 
@@ -919,6 +921,83 @@ async def _do_research(update, context, topic):
     await context.bot.send_document(chat_id=chat_id, document=bio, filename=safe_text_filename(topic, "md"), caption="📄 Исследовательский пакет готов")
 
 
+async def market_command(update, context):
+    replied = update.message.reply_to_message
+    if replied and getattr(replied, "text", None):
+        topic = replied.text.strip()
+    else:
+        topic = " ".join(context.args).strip()
+    if not topic:
+        context.chat_data["pending_market"] = True
+        await update.message.reply_text(
+            "🛒 Напиши, что анализируем на маркетплейсах, напр.:\n"
+            "«холсты или рамы для картин на Ozon и Wildberries»\n"
+            "— я найду данные и пришлю отчёт (цены, конкуренты, отзывы, тренды)."
+        )
+        return
+    await _do_market(update, context, topic)
+
+
+async def _do_market(update, context, topic):
+    import io as _io
+    chat_id = update.message.chat_id
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    await update.message.reply_text(f"🛒 Анализирую маркетплейсы по теме: *{topic}* …")
+    queries = [
+        f"{topic} Ozon Wildberries цена",
+        f"{topic} отзывы покупателей недостатки",
+        f"{topic} конкуренты ниша спрос",
+        f"{topic} тренды 2025 маркетплейс",
+        f"{topic} Wildberries Ozon продажи оборот",
+    ]
+    results = []
+    seen = set()
+    for q in queries:
+        for r in web_search_raw(q):
+            u = r.get("url", "")
+            if u and u not in seen:
+                seen.add(u)
+                results.append(r)
+        if len(results) >= 12:
+            break
+    if not results:
+        await update.message.reply_text("Не удалось ничего найти в сети. Попробуй переформулировать запрос.")
+        return
+    src = "\n\n".join(
+        f"[{i+1}] {r['title']} ({r.get('url','')})\n{r.get('snippet','')}"
+        for i, r in enumerate(results)
+    )
+    system = (
+        "Ты — аналитик маркетплейсов (Ozon, Wildberries, Amazon). На основе предоставленных "
+        "результатов поиска составь структурированный аналитический отчёт на русском языке по теме. "
+        "Обязательно используй заголовки (##) и списки. Включи разделы:\n"
+        "## TL;DR (коротко суть)\n"
+        "## Обзор ниши и тренды (что сейчас актуально, рост/падение спроса)\n"
+        "## Ценовой коридор (диапазоны цен по найденным данным, если есть; если нет — честно укажи)\n"
+        "## Конкуренты и их предложения (кто продаёт, чем выделяется)\n"
+        "## Анализ отзывов и боли покупателей (частые жалобы, что ценят)\n"
+        "## SWOT (сильные/слабые стороны ниши, возможности, риски)\n"
+        "## Рекомендации (с чего начать, на что упор сделать)\n"
+        "## Источники (все ссылки из поиска)\n"
+        "НЕ выдумывай факты, которых нет в результатах поиска; если данных мало — честно укажи это. "
+        "В конце добавь дисклеймер: веб-поиск даёт ограниченные данные маркетплейсов; для живых продаж/цен "
+        "нужны официальные Seller API (Ozon/WB). Формат — чистый Markdown без обёртки ```."
+    )
+    user = f"Тема анализа: {topic}\n\nРезультаты поиска:\n{src}\n\nСоставь аналитический отчёт по маркетплейсам."
+    md = call_cloudflare_chat(system, user, max_tokens=3500)
+    if not md:
+        await update.message.reply_text("❌ Не удалось синтезировать отчёт (ошибка Cloudflare). Попробуй позже.")
+        return
+    bio = _io.BytesIO(md.encode("utf-8"))
+    bio.seek(0)
+    await context.bot.send_document(
+        chat_id=chat_id,
+        document=bio,
+        filename=safe_text_filename(topic, "md"),
+        caption="📊 Отчёт по маркетплейсам готов",
+    )
+
+
 def _pdf_bytes_from(text):
     from fpdf import FPDF
     import io as _io
@@ -1040,6 +1119,10 @@ async def handle_text(update, context):
         context.chat_data.pop("pending_research", None)
         await _do_research(update, context, user_text)
         return
+    if context.chat_data.get("pending_market"):
+        context.chat_data.pop("pending_market", None)
+        await _do_market(update, context, user_text)
+        return
     history = context.chat_data.get("history", [])
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": user_text}]
     last_assistant = ""
@@ -1104,6 +1187,7 @@ async def _post_init(application):
             BotCommand("txt", "сохранить последний ответ в .txt"),
             BotCommand("md", "сохранить последний ответ в .md"),
             BotCommand("research", "исследовать тему и прислать .md-файл"),
+            BotCommand("market", "анализ товара/ниши на маркетплейсах"),
         ])
     except Exception:
         pass
@@ -1208,6 +1292,7 @@ def main():
     app.add_handler(CommandHandler("txt", txt_command))
     app.add_handler(CommandHandler("md", md_command))
     app.add_handler(CommandHandler("research", research_command))
+    app.add_handler(CommandHandler("market", market_command))
     app.add_handler(CallbackQueryHandler(pdf_button_callback, pattern="^pdf:"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
