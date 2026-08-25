@@ -707,6 +707,21 @@ async def start(update, context):
         await context.bot.set_chat_menu_button(chat_id=update.effective_chat.id, menu_button=MenuButtonCommands())
     except Exception:
         pass
+    # Закреплённое сообщение-«разбуди» (Render засыпает без активности ~15 мин)
+    try:
+        wake = await update.message.reply_text(
+            "💡 Этот бот живёт на бесплатном сервере и засыпает через ~15 минут без активности.\n\n"
+            "Если бот не отвечает — разбуди его одним тапом по ссылке:\n"
+            "🔗 https://assistant-bot-71lb.onrender.com\n\n"
+            "После этого возвращайся сюда и напиши сообщение — бот ответит."
+        )
+        await context.bot.pin_chat_message(
+            chat_id=update.effective_chat.id,
+            message_id=wake.message_id,
+            disable_notification=True,
+        )
+    except Exception:
+        pass
 
 
 async def help_command(update, context):
