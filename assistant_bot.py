@@ -1111,8 +1111,11 @@ async def handle_text(update, context):
     if not user_text:
         return
     if user_text.startswith("/"):
+        # любая команда сбрасывает зависшие режимы ожидания (иначе старый
+        # pending_market/pending_research мог «съесть» следующее сообщение)
         context.chat_data.pop("pending_img", None)
         context.chat_data.pop("pending_research", None)
+        context.chat_data.pop("pending_market", None)
         return
     if context.chat_data.get("pending_img"):
         context.chat_data.pop("pending_img", None)
